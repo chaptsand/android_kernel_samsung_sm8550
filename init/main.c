@@ -112,7 +112,9 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/initcall.h>
 
+#if defined(CONFIG_KUNIT) && defined(CONFIG_UML)
 #include <kunit/test.h>
+#endif
 
 static int kernel_init(void *);
 
@@ -217,8 +219,15 @@ static bool __init obsolete_checksetup(char *line)
 				pr_warn("Parameter %s is obsolete, ignored\n",
 					p->str);
 				return true;
-			} else if (p->setup_func(line + n))
-				return true;
+			} else {
+				int ret;
+
+				memblock_memsize_set_name(p->str);
+				ret = p->setup_func(line + n);
+				memblock_memsize_unset_name();
+				if (ret)
+					return true;
+			}
 		}
 		p++;
 	} while (p < __setup_end);
@@ -747,8 +756,10 @@ static int __init do_early_param(char *param, char *val,
 		    (strcmp(param, "console") == 0 &&
 		     strcmp(p->str, "earlycon") == 0)
 		) {
+			memblock_memsize_set_name(p->str);
 			if (p->setup_func(val) != 0)
 				pr_warn("Malformed early option '%s'\n", param);
+			memblock_memsize_unset_name();
 		}
 	}
 	/* We accept everything at this stage. */
@@ -996,6 +1007,7 @@ asmlinkage __visible void __init __no_sanitize_address start_kernel(void)
 
 	/* trace_printk can be enabled here */
 	early_trace_init();
+	
 
 	/*
 	 * Set up the scheduler prior starting any interrupts (such as the
@@ -1618,7 +1630,9 @@ static noinline void __init kernel_init_freeable(void)
 
 	do_basic_setup();
 
+#if defined(CONFIG_KUNIT) && defined(CONFIG_UML)
 	kunit_run_all_tests();
+#endif
 
 	wait_for_initramfs();
 	console_on_rootfs();
