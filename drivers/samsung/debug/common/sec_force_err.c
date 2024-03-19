@@ -93,7 +93,7 @@ int sec_force_err_add_custom_handle(struct force_err_handle *h)
 }
 EXPORT_SYMBOL_GPL(sec_force_err_add_custom_handle);
 
-static inline __force_err_del_custom_handle(struct force_err *force_err,
+static inline int __force_err_del_custom_handle(struct force_err *force_err,
 		struct force_err_handle *h)
 {
 	int ret = 0;
