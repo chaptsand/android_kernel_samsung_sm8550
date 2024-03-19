@@ -1282,7 +1282,6 @@ dt_binding_check: scripts_dtc
 
 
 ifeq ($(KBUILD_EXTMOD),)
--include $(srctree)/extmod.mk
 core-y			+= kernel/ certs/ mm/ fs/ ipc/ security/ crypto/
 core-$(CONFIG_BLOCK)	+= block/
 core-$(CONFIG_IO_URING)	+= io_uring/
