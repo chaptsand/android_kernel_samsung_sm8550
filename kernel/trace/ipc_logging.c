@@ -1071,7 +1071,7 @@ static void __exit net_ipc_log_exit(void)
 		kfree(buf);
 }
 
-static int __init __create_dummy_ipc_context()
+static int __init __create_dummy_ipc_context(void)
 {
 	if (sec_debug_is_enabled())
 		return 0;
