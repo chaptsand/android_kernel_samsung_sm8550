@@ -457,7 +457,7 @@ static ssize_t accel_reactive_store(struct device *dev,
 	return size;
 }
 
-bool sns_check_ignore_crash()
+bool sns_check_ignore_crash(void)
 {
 	return is_ignore_crash_factory;
 }
