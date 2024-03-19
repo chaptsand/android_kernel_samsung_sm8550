@@ -1825,7 +1825,7 @@ static void uaudio_qmi_svc_disconnect_cb(struct qmi_handle *handle,
 	}
 }
 
-static int uaudio_find_active_idx()
+static int uaudio_find_active_idx(void)
 {
 	int idx;
 
