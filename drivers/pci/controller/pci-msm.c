@@ -6784,7 +6784,7 @@ static void msm_handle_error_source(struct pci_dev *dev,
 	int aer = dev->aer_cap;
 	struct msm_pcie_dev_t *rdev = info->rdev;
 	u32 status, sev;
-	static aer_counter;
+	static int aer_counter;
 
 	if (!rdev->aer_dump && !rdev->suspending &&
 		rdev->link_status == MSM_PCIE_LINK_ENABLED) {
