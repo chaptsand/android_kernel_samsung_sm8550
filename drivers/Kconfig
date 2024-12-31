@@ -236,4 +236,83 @@ source "drivers/interconnect/Kconfig"
 source "drivers/counter/Kconfig"
 
 source "drivers/most/Kconfig"
+
+# Samsung Added
+
+source "drivers/samsung/Kconfig"
+
+source "drivers/switch/Kconfig"
+
+source "drivers/sensors/Kconfig"
+
+source "drivers/adsp_factory/Kconfig"
+
+source "drivers/regulator/pmic_class/Kconfig"
+
+source "drivers/vibrator/common/vib_info/Kconfig"
+
+source "drivers/misc/drb/Kconfig"
+
+source "drivers/uwb/uwb_logger/Kconfig"
+
+source "drivers/sec_panel_notifier/Kconfig"
+
+source "drivers/usb/common/vbus_notifier/Kconfig"
+
+source "drivers/battery/charger/max77705_charger/Kconfig"
+
+source "drivers/battery/core/Kconfig"
+
+source "drivers/vibrator/common/inputff/Kconfig"
+
+source "drivers/muic/common/Kconfig"
+
+source "drivers/usb/typec/manager/Kconfig"
+
+source "drivers/input/sec_input/Kconfig"
+
+source "drivers/fingerprint/Kconfig"
+
+source "drivers/firmware/cirrus/Kconfig"
+
+source "drivers/input/input_boost/Kconfig"
+
+source "drivers/usb/typec/common/Kconfig"
+
+source "drivers/battery/charger/pca9481_charger/Kconfig"
+
+source "drivers/vibrator/cs/cs40l26/Kconfig"
+
+source "drivers/input/misc/hall/Kconfig"
+
+source "drivers/optics/Kconfig"
+
+source "drivers/battery/fuelgauge/max77705_fuelgauge/Kconfig"
+
+source "drivers/mfd/maxim/Kconfig"
+
+source "drivers/battery/common/Kconfig"
+
+source "drivers/nfc/snvm/Kconfig"
+
+source "drivers/regulator/s2dos05/Kconfig"
+
+source "drivers/usb/typec/maxim/Kconfig"
+
+source "drivers/regulator/s2mpb02/Kconfig"
+
+source "drivers/uwb/Kconfig"
+
+source "drivers/hwmon/sec_thermistor/Kconfig"
+
+source "drivers/secdp/Kconfig"
+
+source "drivers/sensors_lego/Kconfig"
+
+source "drivers/battery/wireless/Kconfig"
+
+source "drivers/input/sec_input/stm_spi/Kconfig"
+
+source "drivers/mfd/slsi/s2mpb02/Kconfig"
+
 endmenu
