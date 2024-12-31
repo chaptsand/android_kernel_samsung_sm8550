@@ -24,6 +24,25 @@
 #include <soc/qcom/soc_sleep_stats.h>
 #include <clocksource/arm_arch_timer.h>
 #include <soc/qcom/boot_stats.h>
+#if IS_ENABLED(CONFIG_SEC_PM_LOG)
+#include <linux/sec_pm_log.h>
+#endif
+#ifdef CONFIG_SEC_FACTORY
+#include <linux/time.h>
+#include <linux/ktime.h>
+#include <linux/time64.h>
+#include "../../adsp_factory/adsp.h"
+#endif
+#if IS_ENABLED(CONFIG_SEC_PM)
+#include <trace/events/power.h>
+
+#define MAX_BUF_LEN		512
+#define MSM_ARCH_TIMER_FREQ	19200000
+#define GET_SEC(A)		((A) / (MSM_ARCH_TIMER_FREQ))
+#define GET_MSEC(A)		(((A) / (MSM_ARCH_TIMER_FREQ / 1000)) % 1000)
+
+static DEFINE_MUTEX(sleep_stats_mutex);
+#endif /* CONFIG_SEC_PM */
 
 #define STAT_TYPE_ADDR		0x0
 #define COUNT_ADDR		0x4
@@ -103,6 +122,11 @@ struct ddr_stats_g_data {
 };
 
 struct ddr_stats_g_data *ddr_gdata;
+#if IS_ENABLED(CONFIG_SEC_PM)
+#define MAX_SUBSYS_LEN	16
+static int max_subsys_count;
+static int subsys_names[MAX_SUBSYS_LEN];
+#endif
 #endif
 
 static bool ddr_freq_update;
@@ -493,6 +517,9 @@ static struct dentry *create_debugfs_entries(void __iomem *reg,
 				debugfs_create_file(subsystems[j].name, 0444,
 						    root, &subsystems[j],
 						    &subsystem_sleep_stats_fops);
+#if IS_ENABLED(CONFIG_SEC_PM)
+				subsys_names[max_subsys_count++] = j;
+#endif
 				break;
 			}
 		}
@@ -508,6 +535,157 @@ static struct dentry *create_debugfs_entries(void __iomem *reg,
 
 exit:
 	return root;
+}
+#endif
+
+#if IS_ENABLED(CONFIG_SEC_PM)
+u64 last_accumulated[5];
+static void __iomem *global_reg_base;
+static struct stats_prv_data *global_prv_data;
+struct device_node *global_node;
+
+static void sec_sleep_stats_show(const char *annotation)
+{
+	char buf[MAX_BUF_LEN];
+	char *buf_ptr = buf;
+	unsigned int duration_sec, duration_msec;
+
+#if IS_ENABLED(CONFIG_SEC_PM_LOG)
+	char pm_log_buf[MAX_BUF_LEN];
+	char *pm_log_buf_ptr = pm_log_buf;
+#endif
+
+	char stat_type[sizeof(u32) + 1] = {0};
+	u32 offset, type;
+	int i, n_subsystems;
+	bool is_exit = (!strcmp("exit", annotation)) ? true : false;
+
+	mutex_lock(&sleep_stats_mutex);
+
+	/* sleep_stats */
+	buf_ptr += sprintf(buf_ptr, "PM: %s: ", annotation);
+#if IS_ENABLED(CONFIG_SEC_PM_LOG)
+	pm_log_buf_ptr += sprintf(pm_log_buf_ptr, "soc: %s: ", (is_exit ? "ex" : "en"));
+#endif
+	for (i = 0; i < global_prv_data[0].config->num_records; i++) {
+		struct sleep_stats stat;
+		u64 accumulated;
+
+		offset = STAT_TYPE_ADDR + (i * sizeof(struct sleep_stats));
+
+		if (global_prv_data[0].config->appended_stats_avail)
+			offset += i * sizeof(struct appended_stats);
+
+		global_prv_data[i].reg = global_reg_base + offset;
+
+		type = readl_relaxed(global_prv_data[i].reg);
+		memcpy(stat_type, &type, sizeof(u32));
+		strim(stat_type);	// stat_type: sleep_stats name
+
+		stat.count = readl_relaxed(global_prv_data[i].reg + COUNT_ADDR);
+		stat.last_entered_at = readq(global_prv_data[i].reg + LAST_ENTERED_AT_ADDR);
+		stat.last_exited_at = readq(global_prv_data[i].reg + LAST_EXITED_AT_ADDR);
+		stat.accumulated = readq(global_prv_data[i].reg + ACCUMULATED_ADDR);
+		accumulated = stat.accumulated;
+
+		if (stat.last_entered_at > stat.last_exited_at)
+			accumulated += arch_timer_read_counter()
+					- stat.last_entered_at;
+
+		if (is_exit && accumulated == last_accumulated[i])
+			buf_ptr += sprintf(buf_ptr, "*");
+		last_accumulated[i] = accumulated;
+
+		duration_sec = GET_SEC(accumulated);
+		duration_msec = GET_MSEC(accumulated);
+
+		buf_ptr += sprintf(buf_ptr, "%s(%d, %u.%u), ",
+				stat_type,
+				stat.count,
+				duration_sec, duration_msec);
+
+#if IS_ENABLED(CONFIG_SEC_PM_LOG)
+		pm_log_buf_ptr += sprintf(pm_log_buf_ptr, "(%d, %u.%u)",
+					stat.count, duration_sec, (duration_msec / 100));
+#endif
+	}
+	buf_ptr += sprintf(buf_ptr, "\n");
+
+	/* subsystem stats */
+	buf_ptr += sprintf(buf_ptr, "PM: %s: ", annotation);
+#if IS_ENABLED(CONFIG_SEC_PM_LOG)
+	pm_log_buf_ptr += sprintf(pm_log_buf_ptr, "/");
+#endif
+	n_subsystems = of_property_count_strings(global_node, "ss-name");
+	if (n_subsystems < 0) {
+		pr_err("%s: n_subsystems is under 0, ret=%d\n", __func__, n_subsystems);
+		mutex_unlock(&sleep_stats_mutex);
+		return;
+	}
+
+#if IS_ENABLED(CONFIG_DEBUG_FS) && IS_ENABLED(CONFIG_QCOM_SMEM)
+	for (i = 0; i < max_subsys_count; i++) {
+		struct subsystem_data *subsystem;
+		struct sleep_stats *stat;
+		u64 accumulated;
+		int idx = subsys_names[i];
+
+		subsystem = &subsystems[idx];
+		stat = qcom_smem_get(subsystem->pid, subsystem->smem_item, NULL);
+		if (IS_ERR(stat)) {
+			pr_err("%s: Failed to get qcom_smem for %s, ret=%d\n", __func__,
+				   subsystems[idx].name, PTR_ERR(stat));
+			continue;
+		}
+
+		accumulated = stat->accumulated;
+
+		if (stat->last_entered_at > stat->last_exited_at)
+			accumulated += arch_timer_read_counter()
+				- stat->last_entered_at;
+
+		duration_sec = GET_SEC(accumulated);
+		duration_msec = GET_MSEC(accumulated);
+
+		buf_ptr += sprintf(buf_ptr, "%s(%d, %u.%u), ",
+						   subsystem->name,
+						   stat->count,
+						   duration_sec, duration_msec);
+#if IS_ENABLED(CONFIG_SEC_PM_LOG)
+		pm_log_buf_ptr += sprintf(pm_log_buf_ptr, "(%d, %u.%u)",
+					stat->count, duration_sec, (duration_msec / 100));
+#endif
+	}
+#endif	
+
+	buf_ptr--;
+	buf_ptr--;
+	buf_ptr += sprintf(buf_ptr, "\n");
+
+#if IS_ENABLED(CONFIG_SEC_PM_LOG)
+	ss_power_print("%s\n", pm_log_buf);
+#endif
+	mutex_unlock(&sleep_stats_mutex);
+
+	pr_info("%s", buf);
+}
+
+static void soc_sleep_stats_debug_suspend_trace_probe(void *unused,
+					const char *action, int val, bool start)
+{
+	/*
+		SUSPEND
+		start(1), val(1), action(machine_suspend)
+	*/
+	if (start && val > 0 && !strcmp("machine_suspend", action))
+		sec_sleep_stats_show("entry");
+
+	/*
+		RESUME
+		start(0), val(1), action(machine_suspend)
+	*/
+	if (!start && val > 0 && !strcmp("machine_suspend", action))
+		sec_sleep_stats_show("exit");
 }
 #endif
 
@@ -529,6 +707,16 @@ static int soc_sleep_stats_probe(struct platform_device *pdev)
 	void __iomem *reg;
 #endif
 	u32 offset;
+
+#if IS_ENABLED(CONFIG_SEC_PM)
+	/* Register callback for cheking subsystem stats */
+	ret = register_trace_suspend_resume(
+		soc_sleep_stats_debug_suspend_trace_probe, NULL);
+	if (ret) {
+		pr_err("%s: Failed to register suspend trace callback, ret=%d\n",
+			__func__, ret);
+	}
+#endif
 
 	config = device_get_match_data(&pdev->dev);
 	if (!config)
@@ -638,6 +826,12 @@ skip_ddr_stats:
 	gdata = prv_data;
 #endif
 
+#if IS_ENABLED(CONFIG_SEC_PM)
+	global_reg_base = reg_base;
+	global_prv_data = prv_data;
+	global_node = pdev->dev.of_node;
+#endif
+
 	return 0;
 }
 
@@ -649,6 +843,10 @@ static int soc_sleep_stats_remove(struct platform_device *pdev)
 	debugfs_remove_recursive(root);
 #endif
 
+#if IS_ENABLED(CONFIG_SEC_PM)
+	unregister_trace_suspend_resume(
+		soc_sleep_stats_debug_suspend_trace_probe, NULL);
+#endif
 	return 0;
 }
 
