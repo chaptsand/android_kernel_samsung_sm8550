@@ -385,7 +385,7 @@ int slim_stream_enable(struct slim_stream_runtime *stream)
 
 	ret = slim_do_transfer(ctrl, &txn);
 	if (ret) {
-		dev_err(ctrl->dev, "%s: slim_do_transfer failed %d\n", __func__, ret);
+		dev_err(ctrl->dev, "%s: %d slim_do_transfer failed %d\n", __func__, __LINE__, ret);
 		return ret;
 	}
 
@@ -451,7 +451,7 @@ int slim_stream_disable(struct slim_stream_runtime *stream)
 
 	ret = slim_do_transfer(ctrl, &txn);
 	if (ret) {
-		dev_err(ctrl->dev, "%s: slim_do_transfer failed %d\n", __func__, ret);
+		dev_err(ctrl->dev, "%s: %d slim_do_transfer failed %d\n", __func__, __LINE__, ret);
 		return ret;
 	}
 
