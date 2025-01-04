@@ -50,11 +50,9 @@ static int reboot_mode_notify(struct notifier_block *this,
 	char *reason = NULL;
 
 	if (cmd) {
-		reason = kmalloc(MAX_REBOOT_REASON_LEN, GFP_KERNEL);
+		reason = kstrdup(cmd, GFP_KERNEL);
 		if (!reason)
 			return -ENOMEM;
-
-		strscpy(reason, (char *)cmd, MAX_REBOOT_REASON_LEN);
 	}
 
 	/* Before comparing to modes retrieved via DT, replace ' ' by '-' */
@@ -65,6 +63,8 @@ static int reboot_mode_notify(struct notifier_block *this,
 	magic = get_reboot_mode_magic(reboot, reason);
 	if (magic)
 		reboot->write(reboot, magic);
+
+	kfree(reason);
 
 	return NOTIFY_DONE;
 }
