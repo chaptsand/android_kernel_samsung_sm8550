@@ -11,7 +11,6 @@
 
 #include "stm_dev.h"
 #include "stm_reg.h"
-#include <linux/rtc.h>
 
 struct stm_ts_data *g_ts;
 
