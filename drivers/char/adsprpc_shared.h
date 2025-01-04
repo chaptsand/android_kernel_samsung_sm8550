@@ -741,6 +741,9 @@ enum fastrpc_msg_type {
 // Must be a power of two.
 #define DSPSIGNAL_GROUP_SIZE 256
 
+#define SS_MEM_PROFILE
+#define SS_MEM_DEBUG
+#define SS_FASTRPC_SYNC
 
 struct secure_vm {
 	int *vmid;
@@ -785,6 +788,11 @@ struct fastrpc_buf {
 	bool in_use;	/* Used only for persistent header buffers */
 	struct timespec64 buf_start_time;
 	struct timespec64 buf_end_time;
+
+#if defined(SS_MEM_DEBUG)
+	uint32_t pid;           /* alloc real pid */
+	char comm[TASK_COMM_LEN];
+#endif
 };
 
 struct fastrpc_ctx_lst;
@@ -1045,12 +1053,17 @@ struct fastrpc_mmap {
 	bool in_use;				/* Indicates if persistent map is in use*/
 	struct timespec64 map_start_time;
 	struct timespec64 map_end_time;
-	bool is_filemap;			/* flag to indicate map used in process init */
+	bool is_filemap;			/*flag to indicate map used in process init*/
 	bool is_dumped;				/* flag to indicate map is dumped during SSR */
 	char *servloc_name;			/* Indicate which daemon mapped this */
 	unsigned int ctx_refs; /* Indicates reference count for context map */
 	/* Map in use for dma handle */
 	unsigned int dma_handle_refs;
+
+#if defined(SS_MEM_DEBUG)
+	uint32_t pid;           /* alloc real pid */
+	char comm[TASK_COMM_LEN];
+#endif
 };
 
 enum fastrpc_perfkeys {
@@ -1198,6 +1211,17 @@ struct fastrpc_file {
 	bool multi_session_support;
 	/* Flag to indicate session info is set */
 	bool set_session_info;
+
+#if defined(SS_MEM_PROFILE)
+	unsigned int len_curr_usage;
+	unsigned int len_peak_usage;
+
+	unsigned int page_curr_usage;
+	unsigned int page_peak_usage;
+
+	struct mem_profile_private *mem_profile;
+#endif
+
 };
 
 union fastrpc_ioctl_param {
