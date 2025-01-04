@@ -131,6 +131,39 @@ static int __maybe_unused subsys_names[MAX_SUBSYS_LEN];
 
 static bool ddr_freq_update;
 
+#define DSP_SLEEP_DEBUG_ON
+
+#if defined(DSP_SLEEP_DEBUG_ON)
+#include <linux/samsung/debug/sec_debug.h>
+#include <linux/workqueue.h>
+#include <linux/soc/qcom/cdsp-loader.h>
+
+#define MAX_COUNT 10
+
+#ifdef CONFIG_SEC_FACTORY
+#define MAX_DSP_ENTRY 2
+#else
+#define MAX_DSP_ENTRY 1
+#endif
+
+struct _dsp_entry {
+	char name[4];
+	uint64_t entry_sec;
+	uint64_t entry_msec;
+	uint64_t prev_exit_sec;
+	uint64_t prev_exit_msec;
+	uint64_t error_count;
+	struct timespec64 interval;
+#ifdef CONFIG_SEC_FACTORY
+	u32 prev_count;
+	struct timespec64 sleep_enter_kts;
+#endif
+	int (*ssr)(void);
+} DSP_ENTRY[MAX_DSP_ENTRY];	// 0 : CDSP, 1 : ADSP - adsp is disabled for the time being.
+
+static DECLARE_WORK(dsp_ssr, cdsp_restart);
+#endif
+
 #ifdef CONFIG_MSM_BOOT_TIME_MARKER
 static struct stats_prv_data *gdata;
 static u64 deep_sleep_last_exited_time;
@@ -555,6 +588,12 @@ static void sec_sleep_stats_show(const char *annotation)
 	char *pm_log_buf_ptr = pm_log_buf;
 #endif
 
+#if defined(DSP_SLEEP_DEBUG_ON)
+	struct _dsp_entry *dsp_entry = NULL;
+	int is_debug_low = 0;
+	unsigned int debug_level = 0;
+#endif
+
 	char stat_type[sizeof(u32) + 1] = {0};
 	u32 offset, type;
 	int i, n_subsystems;
@@ -647,6 +686,78 @@ static void sec_sleep_stats_show(const char *annotation)
 		duration_sec = GET_SEC(accumulated);
 		duration_msec = GET_MSEC(accumulated);
 
+#if defined(DSP_SLEEP_DEBUG_ON)
+#if 0
+		dsp_entry = (!strcmp(subsystem->name, "cdsp")) ? &DSP_ENTRY[0] :
+					(!strcmp(subsystem->name, "slpi") ? &DSP_ENTRY[1] : NULL);
+#else
+		dsp_entry = (!strcmp(subsystem->name, "cdsp")) ? &DSP_ENTRY[0] : NULL;
+#endif
+		if (dsp_entry != NULL) {
+			if (!is_exit) {
+				// entry
+				dsp_entry->entry_sec = duration_sec;
+				dsp_entry->entry_msec = duration_msec;
+			} else {
+				//exit
+				/* Error detected if exit duration is same as entry */
+				if((duration_sec == dsp_entry->entry_sec &&
+							duration_msec == dsp_entry->entry_msec) &&
+						(duration_sec == dsp_entry->prev_exit_sec &&
+						 duration_msec == dsp_entry->prev_exit_msec)) {
+
+					struct timespec64 curr_kts = ktime_to_timespec64(ktime_get_boottime());
+
+					if (dsp_entry->interval.tv_sec != 0) {
+						time64_t diff_kts = curr_kts.tv_sec - dsp_entry->interval.tv_sec;
+
+						if (diff_kts > 60) { // don't update error count within 1 min
+							dsp_entry->error_count++;
+							printk("entry error cnt : %d\n", dsp_entry->error_count);
+							dsp_entry->interval = ktime_to_timespec64(ktime_get_boottime());
+						}
+					} else { 
+						dsp_entry->interval = ktime_to_timespec64(ktime_get_boottime());
+					}
+
+				} else {
+					dsp_entry->error_count = 0;
+				}
+				dsp_entry->prev_exit_sec = duration_sec;
+				dsp_entry->prev_exit_msec = duration_msec;
+			}
+		}
+#ifdef CONFIG_SEC_FACTORY
+		dsp_entry = (!strcmp(subsystem->name, "adsp")) ? &DSP_ENTRY[1] : NULL;
+		if (dsp_entry != NULL && !sns_check_ignore_crash()) {
+			if (!is_exit) {
+				// entry
+				dsp_entry->sleep_enter_kts =
+					ktime_to_timespec64(ktime_get_boottime());
+				dsp_entry->prev_count = stat->count;
+			} else {
+				//exit
+				struct timespec64 curr_kts =
+					ktime_to_timespec64(ktime_get_boottime());
+				time64_t diff_kts =
+					curr_kts.tv_sec - dsp_entry->sleep_enter_kts.tv_sec;
+				if (diff_kts > 10) {  // sleep more than 10s
+					u32 diff_count = stat->count - dsp_entry->prev_count;
+					int64_t wakeup_rate = 0;
+					// more than about 200 wakeups in a sec.
+					wakeup_rate = diff_count / diff_kts;
+					if (wakeup_rate > 200) {
+						dsp_entry->error_count = MAX_COUNT + 1;
+						pr_err("%s frequent wakeup, %u, %u\n",
+							dsp_entry->name,
+							(u32)diff_kts,
+							(u32)wakeup_rate);
+					}
+				}
+			}
+		}
+#endif
+#endif
 		buf_ptr += sprintf(buf_ptr, "%s(%d, %u.%u), ",
 						   subsystem->name,
 						   stat->count,
@@ -668,6 +779,36 @@ static void sec_sleep_stats_show(const char *annotation)
 	mutex_unlock(&sleep_stats_mutex);
 
 	pr_info("%s", buf);
+
+#if defined(DSP_SLEEP_DEBUG_ON)
+	// 0 : CDSP, 1 : ADSP
+	for (i = 0; i < sizeof(DSP_ENTRY) / sizeof(struct _dsp_entry); i++) {
+		dsp_entry = &DSP_ENTRY[i];
+		if(dsp_entry->error_count > MAX_COUNT) {
+			debug_level = sec_debug_level();
+
+			switch (debug_level) {
+				case SEC_DEBUG_LEVEL_LOW:
+					is_debug_low = 1;
+					break;
+				case SEC_DEBUG_LEVEL_MID:
+					is_debug_low = 0;
+					break;
+			}
+
+			if (!is_debug_low) {
+				pr_err("entry error cnt : %d\n", dsp_entry->error_count);
+				pr_err("Intentional crash for %s\n", dsp_entry->name);
+				BUG_ON(1);
+			} else {
+				dsp_entry->error_count = 0;
+				pr_err("reset entry error cnt : %d\n", dsp_entry->error_count);
+				pr_err("Intentional cdsp subsystem restart\n");
+				schedule_work(&dsp_ssr);
+			}
+		}
+	}
+#endif
 }
 
 static void soc_sleep_stats_debug_suspend_trace_probe(void *unused,
@@ -832,6 +973,13 @@ skip_ddr_stats:
 	global_node = pdev->dev.of_node;
 #endif
 
+#if defined(DSP_SLEEP_DEBUG_ON)
+	strncpy(DSP_ENTRY[0].name, "cdsp", 4);
+#if 0
+	strncpy(DSP_ENTRY[1].name, "adsp", 4);
+#endif
+#endif
+
 	return 0;
 }
 
@@ -888,4 +1036,4 @@ module_platform_driver(soc_sleep_stats_driver);
 
 MODULE_DESCRIPTION("Qualcomm Technologies, Inc. (QTI) SoC Sleep Stats driver");
 MODULE_LICENSE("GPL v2");
-MODULE_SOFTDEP("pre: smem");
+MODULE_SOFTDEP("pre: smem  cdsp-loader");

@@ -1799,6 +1799,7 @@ static int qcom_bwmon_driver_probe(struct platform_device *pdev)
 	u32 dcvs_hw = NUM_DCVS_PATHS, second_hw = NUM_DCVS_PATHS;
 	struct kobject *dcvs_kobj;
 	struct device_node *of_node, *tmp_of_node;
+	unsigned long flags;
 
 	m = devm_kzalloc(dev, sizeof(*m), GFP_KERNEL);
 	if (!m)
@@ -2010,7 +2011,7 @@ static int qcom_bwmon_driver_probe(struct platform_device *pdev)
 	ret = start_monitor(&m->hw);
 	if (ret < 0) {
 		dev_err(dev, "Error starting BWMON monitor: %d\n", ret);
-		return ret;
+		goto err_sysfs;
 	}
 
 	dcvs_kobj = qcom_dcvs_kobject_get(dcvs_hw);
@@ -2031,6 +2032,9 @@ static int qcom_bwmon_driver_probe(struct platform_device *pdev)
 
 err_sysfs:
 	stop_monitor(&m->hw);
+	spin_lock_irqsave(&list_lock, flags);
+	list_del(&node->list);
+	spin_unlock_irqrestore(&list_lock, flags);
 	return ret;
 }
 
