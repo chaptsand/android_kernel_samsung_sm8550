@@ -2968,6 +2968,9 @@ exit_rt_resume:
 	if (geni_mas->gsi_mode)
 		ret = spi_geni_gpi_suspend_resume(geni_mas, false);
 
+	geni_write_reg(0x7f, geni_mas->base, GENI_OUTPUT_CTRL);
+	udelay(10);
+
 	enable_irq(geni_mas->irq);
 	return ret;
 }
