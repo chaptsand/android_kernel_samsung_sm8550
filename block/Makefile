@@ -48,3 +48,8 @@ obj-$(CONFIG_BLK_SEC_COMMON)   += blk-sec-common.o
 blk-sec-stats-$(CONFIG_BLK_SEC_STATS)	:= blk-sec-stat.o blk-sec-stat-pio.o blk-sec-stat-traffic.o
 obj-$(CONFIG_BLK_SEC_STATS)	+= blk-sec-stats.o
 obj-$(CONFIG_BLK_SEC_WB)   += blk-sec-wb.o
+
+ifdef CONFIG_SEC_KUNIT
+GCOV_PROFILE_blk-sec-stats.o	:=y
+GCOV_PROFILE_blk-ssg.o :=y
+endif
