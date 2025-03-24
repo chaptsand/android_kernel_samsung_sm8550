@@ -16,6 +16,13 @@
 #include "debug-ipc.h"
 #include "gadget.h"
 
+#if IS_ENABLED(CONFIG_USB_NOTIFY_LAYER)
+#include <linux/usb_notify.h>
+#endif
+#if IS_ENABLED(CONFIG_USB_CONFIGFS_F_SS_MON_GADGET)
+#include <linux/usb/f_ss_mon_gadget.h>
+#endif
+
 struct kprobe_data {
 	struct dwc3 *dwc;
 	int xi0;
@@ -63,8 +70,16 @@ static int exit_usb_ep_set_maxpacket_limit(struct kretprobe_instance *ri,
 static int entry_dwc3_gadget_run_stop(struct kretprobe_instance *ri,
 				   struct pt_regs *regs)
 {
+#if IS_ENABLED(CONFIG_USB_CONFIGFS_F_SS_MON_GADGET)
+	struct kprobe_data *data = (struct kprobe_data *)ri->data;
+#endif
 	struct dwc3 *dwc = (struct dwc3 *)regs->regs[0];
 	int is_on = (int)regs->regs[1];
+
+#if IS_ENABLED(CONFIG_USB_CONFIGFS_F_SS_MON_GADGET)
+	data->dwc = dwc;
+	data->xi0 = is_on;
+#endif
 
 	if (is_on) {
 		/*
@@ -97,6 +112,27 @@ static int entry_dwc3_gadget_run_stop(struct kretprobe_instance *ri,
 	return 0;
 }
 
+#if IS_ENABLED(CONFIG_USB_CONFIGFS_F_SS_MON_GADGET)
+static int exit_dwc3_gadget_run_stop(struct kretprobe_instance *ri,
+				   struct pt_regs *regs)
+{
+	unsigned long long retval = regs_return_value(regs);
+	struct kprobe_data *data = (struct kprobe_data *)ri->data;
+	struct dwc3 *dwc = data->dwc;
+	int is_on;
+
+	is_on = data->xi0;
+
+	vbus_session_notify(dwc->gadget, is_on, retval);
+
+	if (retval) {
+		pr_info("usb: dwc3_gadget_run_stop : dwc3_gadget %s failed (%d)\n",
+			is_on ? "ON" : "OFF", retval);
+	}
+	return 0;
+}
+#endif
+
 static int entry_dwc3_send_gadget_ep_cmd(struct kretprobe_instance *ri,
 				   struct pt_regs *regs)
 {
@@ -119,6 +155,11 @@ static int entry_dwc3_gadget_reset_interrupt(struct kretprobe_instance *ri,
 
 	dwc3_core_stop_hw_active_transfers(dwc);
 	dwc3_msm_notify_event(dwc, DWC3_CONTROLLER_NOTIFY_CLEAR_DB, 0);
+
+#if IS_ENABLED(CONFIG_USB_CONFIGFS_F_SS_MON_GADGET)
+	usb_reset_notify(dwc->gadget);
+#endif
+
 	return 0;
 }
 
@@ -138,6 +179,40 @@ static int exit_dwc3_gadget_conndone_interrupt(struct kretprobe_instance *ri,
 
 	dwc3_msm_notify_event(data->dwc, DWC3_CONTROLLER_CONNDONE_EVENT, 0);
 
+	switch (data->dwc->speed) {
+	case DWC3_DSTS_SUPERSPEED_PLUS:
+#if defined(CONFIG_USB_NOTIFY_PROC_LOG)
+		store_usblog_notify(NOTIFY_USBSTATE,
+			(void *)"USB_STATE=ENUM:CONNDONE:PSS", NULL);
+#endif
+		break;
+	case DWC3_DSTS_SUPERSPEED:
+#if defined(CONFIG_USB_NOTIFY_PROC_LOG)
+		store_usblog_notify(NOTIFY_USBSTATE,
+			(void *)"USB_STATE=ENUM:CONNDONE:SS", NULL);
+#endif
+		break;
+	case DWC3_DSTS_HIGHSPEED:
+#if defined(CONFIG_USB_NOTIFY_PROC_LOG)
+		store_usblog_notify(NOTIFY_USBSTATE,
+			(void *)"USB_STATE=ENUM:CONNDONE:HS", NULL);
+#endif
+		break;
+	case DWC3_DSTS_FULLSPEED:
+#if defined(CONFIG_USB_NOTIFY_PROC_LOG)
+		store_usblog_notify(NOTIFY_USBSTATE,
+			(void *)"USB_STATE=ENUM:CONNDONE:FS", NULL);
+#endif
+		break;
+/*
+	case DWC3_DSTS_LOWSPEED:
+#if defined(CONFIG_USB_NOTIFY_PROC_LOG)
+		store_usblog_notify(NOTIFY_USBSTATE,
+			(void *)"USB_STATE=ENUM:CONNDONE:LS", NULL);
+#endif
+		break;
+*/
+	}
 	return 0;
 }
 
@@ -236,6 +311,28 @@ static int entry_trace_event_raw_event_dwc3_log_ep(struct kretprobe_instance *ri
 	return 0;
 }
 
+static int entry_dwc3_gadget_vbus_draw(struct kretprobe_instance *ri,
+				   struct pt_regs *regs)
+{
+
+	unsigned int mA = (unsigned int)regs->regs[1];
+
+	switch (mA) {
+	case 2:
+		pr_info("[USB] dwc3_gadget_vbus_draw: suspend -log only-\n");
+		break;
+	case 100:
+		break;
+	case 500:
+		break;
+	case 900:
+		break;
+	default:
+		break;
+	}
+	return 0;
+}
+
 #define ENTRY_EXIT(name) {\
 	.handler = exit_##name,\
 	.entry_handler = entry_##name,\
@@ -252,7 +349,11 @@ static int entry_trace_event_raw_event_dwc3_log_ep(struct kretprobe_instance *ri
 }
 
 static struct kretprobe dwc3_msm_probes[] = {
+#if IS_ENABLED(CONFIG_USB_CONFIGFS_F_SS_MON_GADGET)
+	ENTRY_EXIT(dwc3_gadget_run_stop),
+#else
 	ENTRY(dwc3_gadget_run_stop),
+#endif
 	ENTRY(dwc3_send_gadget_ep_cmd),
 	ENTRY(dwc3_gadget_reset_interrupt),
 	ENTRY_EXIT(dwc3_gadget_conndone_interrupt),
@@ -264,6 +365,7 @@ static struct kretprobe dwc3_msm_probes[] = {
 	ENTRY(trace_event_raw_event_dwc3_log_trb),
 	ENTRY(trace_event_raw_event_dwc3_log_event),
 	ENTRY(trace_event_raw_event_dwc3_log_ep),
+	ENTRY(dwc3_gadget_vbus_draw),
 };
 
 
