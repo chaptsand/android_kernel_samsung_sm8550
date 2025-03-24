@@ -990,6 +990,27 @@ static irqreturn_t arm_smmu_context_fault_retry(struct arm_smmu_domain *smmu_dom
 }
 #endif
 
+static void debug_camera_faults(struct arm_smmu_domain *smmu_domain,
+		struct arm_smmu_device *smmu, int idx)
+{
+	unsigned long iova;
+	phys_addr_t phys_soft;
+	struct iommu_domain *domain = &smmu_domain->domain;
+
+	if (!strstr(dev_name(smmu_domain->dev), "cam_smmu"))
+		return;
+
+	print_fault_regs(smmu_domain, smmu, idx);
+	iova = arm_smmu_cb_readq(smmu, idx, ARM_SMMU_CB_FAR);
+	phys_soft = arm_smmu_iova_to_phys(domain, iova);
+	dev_err(smmu->dev, "soft iova-to-phys=%llx\n", (u64)phys_soft);
+
+	if (!phys_soft)
+		return;
+
+	arm_smmu_verify_fault(smmu_domain, smmu, idx);
+}
+
 static irqreturn_t arm_smmu_context_fault(int irq, void *dev)
 {
 	u32 fsr;
@@ -1040,6 +1061,8 @@ static irqreturn_t arm_smmu_context_fault(int irq, void *dev)
 	 *    SCTLR.HUPCF has the desired effect if subsequent transactions also
 	 *    need to be terminated.
 	 */
+	debug_camera_faults(smmu_domain, smmu, idx);
+
 	ret = report_iommu_fault_helper(smmu_domain, smmu, idx);
 	if (ret == -ENOSYS) {
 		if (__ratelimit(&_rs)) {
@@ -2264,7 +2287,7 @@ static int arm_smmu_attach_dev(struct iommu_domain *domain, struct device *dev)
 	 * to 5-10sec worth of reprogramming the context bank, while
 	 * the system appears to be locked up to the user.
 	 */
-	pm_runtime_set_autosuspend_delay(smmu->dev, 20);
+	pm_runtime_set_autosuspend_delay(smmu->dev, 5);
 	pm_runtime_use_autosuspend(smmu->dev);
 
 rpm_put:
@@ -4174,9 +4197,20 @@ static int arm_smmu_pm_prepare(struct device *dev)
 
 	if (atomic_read(&dev->power.usage_count) == 1) {
 		ret = pm_runtime_put_sync_suspend(dev);
+		/*
+		 * sync suspend would decrement the usage count before rpm suspend
+		 * and this causes usage count under flow in the next sequence of
+		 * runtime suspend operations. due to this underflow, system suspend
+		 * will fail and keeps smmu alive and further it is observed by adreno
+		 * while resuming. which is  warning for every 5 seconds by dumping
+		 * these votes.
+		 * to avoid this problem incremented the usage count back to make sure
+		 * the usage count is align before prepare and after suspend when
+		 * sync supend is invoked.
+		 */
+		pm_runtime_get_noresume(dev);
 		if (ret < 0) {
 			dev_err(dev, "sync supend failed to suspend the rpm\n");
-			pm_runtime_get_noresume(dev);
 			return -EAGAIN;
 		}
 	}
