@@ -206,6 +206,27 @@
  */
 #define PAGESLEN_WITH_SHAREDBUF 2
 
+#if defined(SS_MEM_PROFILE)
+#include <linux/samsung/debug/sec_debug.h>
+
+struct mem_profile_private {
+	struct hlist_node list_node;
+
+	int cid;
+	int tgid_open;
+	int tgid;
+	char comm[TASK_COMM_LEN];
+
+	unsigned int profile_len_peak_usage;
+	unsigned int profile_page_peak_usage;
+};
+
+#define MAX_MEM_PROFILE_ENTRY ((PAGE_SIZE/sizeof(struct mem_profile_private)) - 1)
+
+static int mem_profile_entry;
+struct hlist_head mem_profile_root = HLIST_HEAD_INIT;
+#endif
+
 /* Unique index flag used for mini dump */
 static int md_unique_index_flag[MAX_UNIQUE_ID] = { 0, 0, 0, 0, 0 };
 
@@ -937,6 +958,8 @@ static int fastrpc_mmap_remove(struct fastrpc_file *fl, int fd, uintptr_t va,
 			map->refs == 1 &&
 			/* Remove if only one reference map and no context map */
 			!map->ctx_refs &&
+			/* Remove map only if it isn't being used by DSP */
+			!map->dma_handle_refs &&
 			/* Skip unmap if it is fastrpc shell memory */
 			!map->is_filemap) {
 			match = map;
@@ -976,8 +999,9 @@ static void fastrpc_mmap_free(struct fastrpc_mmap *map, uint32_t flags)
 	if (map->flags == ADSP_MMAP_HEAP_ADDR ||
 				map->flags == ADSP_MMAP_REMOTE_HEAP_ADDR) {
 		spin_lock_irqsave(&me->hlock, irq_flags);
-		map->refs--;
-		if (!map->refs && !map->is_persistent && !map->ctx_refs)
+		if (map->refs)
+			map->refs--;
+		if (!map->refs && !map->is_persistent)
 			hlist_del_init(&map->hn);
 		if (map->refs > 0) {
 			ADSPRPC_WARN(
@@ -990,10 +1014,14 @@ static void fastrpc_mmap_free(struct fastrpc_mmap *map, uint32_t flags)
 			map->in_use = false;
 		spin_unlock_irqrestore(&me->hlock, irq_flags);
 	} else {
-		map->refs--;
-		if (!map->refs && !map->ctx_refs)
+		if (map->refs)
+			map->refs--;
+		/* flags is passed as 1 during fastrpc_file_free (ie process exit),
+		 * so that maps will be cleared even though references are present.
+		 */
+		if (flags || (!map->refs && !map->ctx_refs && !map->dma_handle_refs))
 			hlist_del_init(&map->hn);
-		if (map->refs > 0 && !flags)
+		else
 			return;
 	}
 	if (map->flags == ADSP_MMAP_HEAP_ADDR ||
@@ -1074,6 +1102,15 @@ static void fastrpc_mmap_free(struct fastrpc_mmap *map, uint32_t flags)
 		spin_unlock(&fl->hlock);
 	}
 bail:
+
+#if defined(SS_MEM_PROFILE)
+	if (!IS_ERR_OR_NULL(fl) && !IS_ERR_OR_NULL(map)) {
+		if (!map->is_persistent) {
+			fl->len_curr_usage -= map->len;
+			fl->page_curr_usage -= map->size;
+		}
+	}
+#endif
 	if (!map->is_persistent)
 		kfree(map);
 }
@@ -1409,6 +1446,78 @@ bail:
 		ktime_get_real_ts64(&map->map_end_time);
 	if (err && map)
 		fastrpc_mmap_free(map, 0);
+
+#if defined(SS_MEM_DEBUG)
+	if (!err && map) {
+		map->pid = current->pid;
+		strncpy(map->comm, current->comm, TASK_COMM_LEN - 1);
+	}
+#endif
+
+#if defined(SS_MEM_PROFILE)
+	if (!err && map) {
+		fl->len_curr_usage += map->len;
+		fl->page_curr_usage += map->size;
+
+		if (fl->len_curr_usage > fl->len_peak_usage) {
+			fl->len_peak_usage = fl->len_curr_usage;
+				if (sec_debug_level() < SEC_DEBUG_LEVEL_LOW) {
+					pr_err("[AISYS] [LEN] CID : %d tgid_open : %d tgid : %d len_peak_usage : %d page_peak_usage : %d\n",
+						fl->cid,
+						fl->tgid_open,
+						fl->tgid,
+						fl->len_peak_usage,
+						fl->page_peak_usage);
+				}
+		}
+
+		if (fl->page_curr_usage > fl->page_peak_usage) {
+			fl->page_peak_usage = fl->page_curr_usage;
+			if (sec_debug_level() < SEC_DEBUG_LEVEL_LOW) {
+				pr_err("[AISYS] [PAGE] CID : %d tgid_open : %d tgid : %d len_peak_usage : %d page_peak_usage : %d\n",
+					fl->cid,
+					fl->tgid_open,
+					fl->tgid,
+					fl->len_peak_usage,
+					fl->page_peak_usage);
+			}
+		}
+
+		if (IS_ERR_OR_NULL(fl->mem_profile)) {
+			if (sec_debug_level() < SEC_DEBUG_LEVEL_LOW)
+				pr_err("[AISYS] mem_profile is NULL\n");
+		} else {
+			fl->mem_profile->cid = fl->cid;
+			fl->mem_profile->tgid = fl->tgid;
+
+			if (fl->len_peak_usage > fl->mem_profile->profile_len_peak_usage) {
+				fl->mem_profile->profile_len_peak_usage = fl->len_peak_usage;
+				if (sec_debug_level() < SEC_DEBUG_LEVEL_LOW) {
+					pr_err("[AISYS] [UPDATE_LEN_PEAK_USAGE] CID : %d tgid_open : %d tgid : %d len_peak_usage : %d page_peak_usage : %d\n",
+						fl->cid,
+						fl->tgid_open,
+						fl->tgid,
+						fl->len_peak_usage,
+						fl->page_peak_usage);
+				}
+			}
+
+			if (fl->page_peak_usage > fl->mem_profile->profile_page_peak_usage) {
+				fl->mem_profile->profile_page_peak_usage = fl->page_peak_usage;
+				if (sec_debug_level() < SEC_DEBUG_LEVEL_LOW) {
+					pr_err("[AISYS] [UPDATE_PAGE_PEAK_USAGE] CID : %d tgid_open : %d tgid : %d len_peak_usage : %d page_peak_usage : %d\n",
+						fl->cid,
+						fl->tgid_open,
+						fl->tgid,
+						fl->len_peak_usage,
+						fl->page_peak_usage);
+				}
+			}
+		}
+	}
+#endif
+
+
 	return err;
 }
 
@@ -1530,6 +1639,11 @@ static int fastrpc_buf_alloc(struct fastrpc_file *fl, size_t size,
 	buf->raddr = 0;
 	buf->type = buf_type;
 	ktime_get_real_ts64(&buf->buf_start_time);
+
+#if defined(SS_MEM_DEBUG)
+	buf->pid = current->pid;
+	strncpy(buf->comm, current->comm, TASK_COMM_LEN - 1);
+#endif
 
 	buf->virt = dma_alloc_attrs(fl->sctx->smmu.dev, buf->size,
 						(dma_addr_t *)&buf->phys,
@@ -2393,12 +2507,13 @@ static int get_args(uint32_t kernel, struct smq_invoke_ctx *ctx)
 					FASTRPC_ATTR_NOVA, 0, 0, dmaflags,
 					&ctx->maps[i]);
 		if (!err && ctx->maps[i])
-			ctx->maps[i]->ctx_refs++;
+			ctx->maps[i]->dma_handle_refs++;
 		if (err) {
 			for (j = bufs; j < i; j++) {
-				if (ctx->maps[j] && ctx->maps[j]->ctx_refs)
-					ctx->maps[j]->ctx_refs--;
-				fastrpc_mmap_free(ctx->maps[j], 0);
+				if (ctx->maps[j] && ctx->maps[j]->dma_handle_refs) {
+					ctx->maps[j]->dma_handle_refs--;
+					fastrpc_mmap_free(ctx->maps[j], 0);
+				}
 			}
 			mutex_unlock(&ctx->fl->map_mutex);
 			goto bail;
@@ -2549,14 +2664,33 @@ static int get_args(uint32_t kernel, struct smq_invoke_ctx *ctx)
 		rpra[i].buf.pv = buf;
 	}
 	PERF_END);
+	/* Since we are not holidng map_mutex during get args whole time
+	 * it is possible that dma handle map may be removed by some invalid
+	 * fd passed by DSP. Inside the lock check if the map present or not
+	 */
+	mutex_lock(&ctx->fl->map_mutex);
 	for (i = bufs; i < bufs + handles; ++i) {
-		struct fastrpc_mmap *map = ctx->maps[i];
+		struct fastrpc_mmap *mmap = NULL;
+		/* check if map  was created */
+		if (ctx->maps[i]) {
+			/* check if map still exist */
+			if (!fastrpc_mmap_find(ctx->fl, ctx->fds[i], NULL, 0, 0,
+				0, 0, &mmap)) {
+				if (mmap) {
+					pages[i].addr = mmap->phys;
+					pages[i].size = mmap->size;
+				}
 
-		if (map) {
-			pages[i].addr = map->phys;
-			pages[i].size = map->size;
+			} else {
+				/* map already freed by some other call */
+				mutex_unlock(&ctx->fl->map_mutex);
+				ADSPRPC_ERR("could not find map associated with dma hadle fd %d \n",
+					ctx->fds[i]);
+				goto bail;
+			}
 		}
 	}
+	mutex_unlock(&ctx->fl->map_mutex);
 	fdlist = (uint64_t *)&pages[bufs + handles];
 	crclist = (uint32_t *)&fdlist[M_FDLIST];
 	/* reset fds, crc and early wakeup hint memory */
@@ -2757,9 +2891,10 @@ static int put_args(uint32_t kernel, struct smq_invoke_ctx *ctx,
 			break;
 		if (!fastrpc_mmap_find(ctx->fl, (int)fdlist[i], NULL, 0, 0,
 					0, 0, &mmap)) {
-			if (mmap && mmap->ctx_refs)
-				mmap->ctx_refs--;
-			fastrpc_mmap_free(mmap, 0);
+			if (mmap && mmap->dma_handle_refs) {
+				mmap->dma_handle_refs = 0;
+				fastrpc_mmap_free(mmap, 0);
+			}
 		}
 	}
 	mutex_unlock(&ctx->fl->map_mutex);
@@ -3481,8 +3616,10 @@ read_notif_status:
 		goto bail;
 	}
 	VERIFY(err, 0 == (err = interrupted));
-	if (err)
+	if (err) {
+		pr_err("adsprpc: fastrpc_wait_on_notif_queue interrupt %d", interrupted);
 		goto bail;
+	}
 
 	spin_lock_irqsave(&fl->proc_state_notif.nqlock, flags);
 	list_for_each_entry_safe(inotif, n, &fl->clst.notif_queue, notifn) {
@@ -3745,7 +3882,7 @@ int fastrpc_internal_invoke2(struct fastrpc_file *fl,
 			err = -EBADE;
 			goto bail;
 		}
-		K_COPY_FROM_USER(err, is_compat, &p.user_concurrency,
+		K_COPY_FROM_USER(err, 0, &p.user_concurrency,
 				(void *)inv2->invparam, size);
 		if (err)
 			goto bail;
@@ -6103,8 +6240,13 @@ static ssize_t fastrpc_debugfs_read(struct file *filp, char __user *buffer,
 		hlist_for_each_entry_safe(buf, n, &fl->remote_bufs, hn_rem) {
 			len += scnprintf(fileinfo + len,
 				DEBUGFS_SIZE - len,
+#if !defined(SS_MEM_DEBUG)
 				"0x%-17p|0x%-17llX|%-19zu|0x%-17llX\n",
 				buf->virt, (uint64_t)buf->phys, buf->size, buf->flags);
+#else
+				"0x%-17p|0x%-17llX|%-19zu|0x%-17llX|%d\n",
+				buf->virt, (uint64_t)buf->phys, buf->size, buf->flags, buf->pid);
+#endif
 		}
 
 		len += scnprintf(fileinfo + len, DEBUGFS_SIZE - len,
@@ -6148,9 +6290,33 @@ bail:
 	return ret;
 }
 
+#if defined(SS_MEM_PROFILE)
+static ssize_t ss_fastrpc_debugfs_read(struct file *file,
+const char __user *user_buf, size_t count, loff_t *ppos)
+{
+	struct mem_profile_private *mem_profile;
+	struct hlist_node *n;
+
+	hlist_for_each_entry_safe(mem_profile, n, &mem_profile_root, list_node) {
+		pr_err("[AISYS] [DEBUG_FS] CID : %d tgid_open : %d(%s) tgid : %d len_peak_usage : %d page_peak_usage : %d\n",
+			mem_profile->cid,
+			mem_profile->tgid_open,
+			mem_profile->comm,
+			mem_profile->tgid,
+			mem_profile->profile_len_peak_usage,
+			mem_profile->profile_page_peak_usage);
+	}
+
+	return count;
+}
+#endif
+
 static const struct file_operations debugfs_fops = {
 	.open = simple_open,
 	.read = fastrpc_debugfs_read,
+#if defined(SS_MEM_PROFILE)
+	.write = ss_fastrpc_debugfs_read,
+#endif
 };
 
 static int fastrpc_channel_open(struct fastrpc_file *fl, uint32_t flags)
@@ -6296,12 +6462,46 @@ static int fastrpc_device_open(struct inode *inode, struct file *filp)
 	spin_lock_init(&fl->dspsignals_lock);
 	mutex_init(&fl->signal_create_mutex);
 	init_completion(&fl->shutdown);
+
+#if defined(SS_MEM_PROFILE)
+	{
+		struct mem_profile_private *mem_profile;
+		struct hlist_node *n;
+
+		fl->mem_profile = NULL;
+
+		if (!hlist_empty(&mem_profile_root)) {
+			hlist_for_each_entry_safe(mem_profile, n, &mem_profile_root, list_node) {
+				if (!strncmp(current->comm, mem_profile->comm, TASK_COMM_LEN - 1)) {
+					fl->mem_profile = mem_profile;
+					break;
+				}
+			}
+		}
+
+		if (IS_ERR_OR_NULL(fl->mem_profile)) {
+			if (mem_profile_entry < MAX_MEM_PROFILE_ENTRY) {
+				fl->mem_profile = kzalloc(sizeof(struct mem_profile_private), GFP_KERNEL);
+				INIT_HLIST_NODE(&fl->mem_profile->list_node);
+
+				fl->mem_profile->tgid_open = fl->tgid_open;
+				strncpy(fl->mem_profile->comm, current->comm, TASK_COMM_LEN - 1);
+				fl->mem_profile->profile_len_peak_usage = 0;
+				fl->mem_profile->profile_page_peak_usage = 0;
+
+				hlist_add_head(&fl->mem_profile->list_node, &mem_profile_root);
+				mem_profile_entry++;
+			}
+		}
+	}
+#endif
+
 	return 0;
 }
 
 static int fastrpc_get_process_gids(struct gid_list *gidlist)
 {
-	struct group_info *group_info = get_current_groups();
+	struct group_info *group_info = current_cred()->group_info;
 	int i = 0, err = 0, num_gids = group_info->ngroups + 1;
 	unsigned int *gids = NULL;
 
@@ -8399,9 +8599,182 @@ static int fastrpc_restore(struct device *dev)
 	return 0;
 }
 
+#if defined(SS_FASTRPC_SYNC)
+#include <linux/delay.h>
+
+//#define TEMP_SYNC_PANIC
+#define SS_MAX_WAIT (300) //300ms
+#define SS_ASYNC_WAIT
+#define SS_SYNC_PENDING_WAIT
+//#define SS_SYNC_INTERRUPTED_WAIT
+
+
+#define SS_DEBUG_FS_STR_LEN (20)
+static struct dentry *debugfs_ss_fastrpc_sync_file;
+static unsigned int ss_fastrpc_sync_wait;
+
+static ssize_t ss_fastrpc_sync_debugfs_read(struct file *filp, char __user *user_buf,
+			size_t count, loff_t *ppos)
+{
+	char str[SS_DEBUG_FS_STR_LEN];
+	ssize_t ret = 0;
+
+	ret = snprintf(str, SS_DEBUG_FS_STR_LEN, "%d\n", ss_fastrpc_sync_wait);
+	if (ret <= 0) {
+		return ret;
+	}
+
+	ret = simple_read_from_buffer(user_buf, count, ppos, str, strlen(str));
+
+	pr_err("%s ss_fastrpc_sync_wait : %d ms\n", __func__, ss_fastrpc_sync_wait);
+
+	return ret;
+}
+
+static ssize_t ss_fastrpc_sync_debugfs_write(struct file *file,
+				const char __user *user_buf, size_t count, loff_t *ppos)
+{
+	char str[SS_DEBUG_FS_STR_LEN];
+	ssize_t ret = 0;
+
+	ret = simple_write_to_buffer(str, count, ppos, user_buf, count);
+	if (ret <= 0) {
+		return ret;
+	}
+
+	ret = kstrtou32(str, 10, &ss_fastrpc_sync_wait);
+	if (unlikely(ret < 0)) {
+		pr_err("%s failed to copy_from_user\n", __func__);
+		return ret;
+	}
+
+	pr_err("%s ss_fastrpc_sync_wait : %d ms %d\n", __func__, ss_fastrpc_sync_wait, count);
+
+	if (ss_fastrpc_sync_wait < 0 || ss_fastrpc_sync_wait > SS_MAX_WAIT) {
+		ss_fastrpc_sync_wait = SS_MAX_WAIT;
+	}
+
+	return count;
+}
+
+static const struct file_operations debugfs_ss_fastrpc_sync_fops = {
+	.open = simple_open,
+	.read = ss_fastrpc_sync_debugfs_read,
+	.write = ss_fastrpc_sync_debugfs_write,
+};
+
+static int fastrpc_suspend_late(struct device *dev)
+{
+	struct fastrpc_apps *me = &gfa;
+	struct fastrpc_file *fl = NULL;
+	struct smq_invoke_ctx *ictx = NULL;
+	struct hlist_node *n;
+	struct hlist_node *n_clst;
+
+	int wait_cnt = SS_MAX_WAIT;
+	int wait_sync_cnt = 0;
+
+	int cdsp_cid_async_cnt = 0;
+	int cdsp_cid_async_empty_queue_cnt = 0;
+	int cdsp_cid_sync_queue_pending_working_cnt = 0;
+	int cdsp_cid_sync_queue_interrupted_working_cnt = 0;
+
+	/*
+		There are channels that fastrpc serves. This channel figure number is varing on chipset.
+		For code generalization, it checks all opened cdsp channel at last channel name calling from suspend driver.
+	*/
+	if (strcmp("qcom,msm_fastrpc_compute_cb1", kbasename(dev->of_node->full_name))) {
+		//pr_err("%s %s return\n", __func__, kbasename(dev->of_node->full_name));
+		return 0;
+	} else {
+		if (ss_fastrpc_sync_wait > 0) {
+			pr_err("%s %s start %dms\n", __func__, kbasename(dev->of_node->full_name), ss_fastrpc_sync_wait);
+			for (wait_sync_cnt = 0; wait_sync_cnt < ss_fastrpc_sync_wait; wait_sync_cnt++) {
+				usleep_range(1000, 1000);
+			}
+			pr_err("%s %s end\n", __func__, kbasename(dev->of_node->full_name));
+		} else {
+			pr_err("%s %s start\n", __func__, kbasename(dev->of_node->full_name));
+		}
+	}
+
+	if (!hlist_empty(&me->drivers)) {
+		while (wait_cnt-- > 0) {
+			cdsp_cid_async_cnt = 0;
+			cdsp_cid_async_empty_queue_cnt = 0;
+			cdsp_cid_sync_queue_pending_working_cnt = 0;
+			cdsp_cid_sync_queue_interrupted_working_cnt = 0;
+
+			spin_lock(&me->hlock);
+			hlist_for_each_entry_safe(fl, n, &me->drivers, hn) {
+				if (fl->cid == CDSP_DOMAIN_ID) {
+					cdsp_cid_async_cnt++;
+
+					/*
+					async_wait_queue dose not get triggred by wake_up_all or wake_up_interruptible_all.
+					Just because wake_up or wake_up_interruptible means that delay is only one thing we can do.
+					*/
+					if (hlist_empty(&fl->clst.async_queue)) {
+						cdsp_cid_async_empty_queue_cnt++;
+					}
+
+					hlist_for_each_entry_safe(ictx, n_clst, &fl->clst.pending, hn) {
+						if (ictx->is_work_done == false) {
+							cdsp_cid_sync_queue_pending_working_cnt++;
+						}
+					}
+
+					hlist_for_each_entry_safe(ictx, n_clst, &fl->clst.interrupted, hn) {
+						if (ictx->is_work_done == false) {
+							cdsp_cid_sync_queue_interrupted_working_cnt++;
+						}
+					}
+				} //CDSP_DOMAIN_ID end
+			} //hlist end
+			spin_unlock(&me->hlock);
+
+			if (
+#if defined(SS_ASYNC_WAIT)
+				(cdsp_cid_async_cnt == cdsp_cid_async_empty_queue_cnt)
+#else
+				(1)
+#endif
+#if defined(SS_SYNC_PENDING_WAIT)
+				&& (cdsp_cid_sync_queue_pending_working_cnt == 0)
+#endif
+#if defined(SS_SYNC_INTERRUPTED_WAIT)
+				&& (cdsp_cid_sync_queue_interrupted_working_cnt == 0)
+#endif
+			) {
+				wait_cnt = 0;
+			} else {
+#if defined(TEMP_SYNC_PANIC)
+				pr_err("%s wait_cnt %d\n", __func__, wait_cnt);
+				pr_err("%s async %d %d \n", __func__, cdsp_cid_async_cnt, cdsp_cid_async_empty_queue_cnt);
+				pr_err("%s sync pending %d\n", __func__, cdsp_cid_sync_queue_pending_working_cnt);
+				pr_err("%s sync interrupted %d\n", __func__, cdsp_cid_sync_queue_interrupted_working_cnt);
+
+				panic("CDSP_SYNC_QUEUE_FORCE_PANIC");
+#else
+				usleep_range(1000, 1000);
+#endif
+			}
+		} //while end
+	} //if end
+
+	pr_err("%s end\n", __func__);
+
+	return 0;
+}
+#endif
+
 static const struct dev_pm_ops fastrpc_pm = {
 	.freeze = fastrpc_hibernation_suspend,
 	.restore = fastrpc_restore,
+
+#if defined(SS_FASTRPC_SYNC)
+	.suspend_late = fastrpc_suspend_late,
+#endif
 };
 #endif
 static struct platform_driver fastrpc_driver = {
@@ -8873,6 +9246,13 @@ static int __init fastrpc_device_init(void)
 	fastrpc_register_wakeup_source(me->secure_dev,
 		FASTRPC_SECURE_WAKE_SOURCE_CLIENT_NAME,
 		&me->wake_source_secure);
+
+#if defined(SS_FASTRPC_SYNC)
+	if (!IS_ERR_OR_NULL(debugfs_root)) {
+		debugfs_ss_fastrpc_sync_file = debugfs_create_file("ss_fastrpc_sync", 0644,
+						debugfs_root, NULL, &debugfs_ss_fastrpc_sync_fops);
+	}
+#endif
 
 	return 0;
 device_create_bail:
