@@ -467,6 +467,7 @@ static int qcom_slim_qmi_send_power_request(struct qcom_slim_ngd_ctrl *ctrl,
 		mutex_unlock(&ctrl->qmi_handle_lock);
 		return -EINVAL;
 	}
+
 	rc = qmi_txn_init(ctrl->qmi.handle, &txn,
 				slimbus_power_resp_msg_v01_ei, &resp);
 
@@ -1107,6 +1108,7 @@ static int qcom_slim_ngd_xfer_msg(struct slim_controller *sctrl,
 		txn->comp = NULL;
 		return -EAGAIN;
 	}
+
 	ret = qcom_slim_ngd_tx_msg_post(ctrl, pbuf, txn->rl);
 	if (ret) {
 		mutex_unlock(&ctrl->tx_lock);
@@ -2260,6 +2262,7 @@ static int __maybe_unused qcom_slim_ngd_runtime_idle(struct device *dev)
 static int __maybe_unused qcom_slim_ngd_runtime_suspend(struct device *dev)
 {
 	struct qcom_slim_ngd_ctrl *ctrl = dev_get_drvdata(dev);
+	struct qcom_slim_ngd *ngd = ctrl->ngd;
 	int ret = 0;
 
 	SLIM_INFO(ctrl, "Slim runtime suspend\n");
@@ -2271,6 +2274,7 @@ static int __maybe_unused qcom_slim_ngd_runtime_suspend(struct device *dev)
 	qcom_slim_ngd_exit_dma(ctrl);
 
 	qcom_slim_ngd_disable_irq(ctrl);
+	writel_relaxed(0x0, ngd->base + NGD_INT_EN);
 
 	if (!ctrl->qmi.handle) {
 		SLIM_WARN(ctrl, "%s QMI handle is NULL\n", __func__);
