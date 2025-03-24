@@ -15,6 +15,7 @@
 #include <linux/cpumask.h>
 #include <linux/arch_topology.h>
 #include <linux/cpu.h>
+#include <linux/of.h>
 
 #include <trace/hooks/sched.h>
 #include <trace/hooks/cgroup.h>
@@ -412,18 +413,19 @@ update_window_start(struct rq *rq, u64 wallclock, int event)
 	bool full_window;
 
 	if (wallclock < wrq->latest_clock) {
-		printk_deferred("WALT-BUG CPU%d; wallclock=%llu(0x%llx) is lesser than latest_clock=%llu(0x%llx) walt_clock_suspended=%d sched_clock_last=%llu(0x%llx)",
+		WALT_BUG(WALT_BUG_WALT, NULL, "on CPU%d; wallclock=%llu(0x%llx) is lesser than latest_clock=%llu(0x%llx) walt_clock_suspended=%d sched_clock_last=%llu(0x%llx)",
 				rq->cpu, wallclock, wallclock, wrq->latest_clock,
 				wrq->latest_clock, walt_clock_suspended,
 				sched_clock_last, sched_clock_last);
-		WALT_PANIC(1);
+		wallclock = wrq->latest_clock;
 	}
 	delta = wallclock - wrq->window_start;
 	if (delta < 0) {
-		printk_deferred("WALT-BUG CPU%d; wallclock=%llu(0x%llx) is lesser than window_start=%llu(0x%llx)",
+		WALT_BUG(WALT_BUG_WALT, NULL, " on CPU%d; wallclock=%llu(0x%llx) is lesser than window_start=%llu(0x%llx)",
 				rq->cpu, wallclock, wallclock,
 				wrq->window_start, wrq->window_start);
-		WALT_PANIC(1);
+		delta = 0;
+		wallclock = max(wallclock, wrq->window_start);
 	}
 	wrq->latest_clock = wallclock;
 	if (delta < sched_ravg_window)
@@ -2250,10 +2252,10 @@ update_task_rq_cpu_cycles(struct task_struct *p, struct rq *rq, int event,
 			time_delta = wallclock - wts->mark_start;
 
 		if ((s64)time_delta < 0) {
-			printk_deferred("WALT-BUG pid=%u CPU%d wallclock=%llu(0x%llx) < mark_start=%llu(0x%llx) event=%d irqtime=%llu",
+			WALT_BUG(WALT_BUG_WALT, p, "WALT-BUG pid=%u CPU%d wallclock=%llu(0x%llx) < mark_start=%llu(0x%llx) event=%d irqtime=%llu",
 					 p->pid, rq->cpu, wallclock, wallclock,
 					 wts->mark_start, wts->mark_start, event, irqtime);
-			WALT_PANIC((s64)time_delta < 0);
+			time_delta = 1;
 		}
 
 		wrq->task_exec_scale = DIV64_U64_ROUNDUP(cycles_delta *
@@ -3247,6 +3249,8 @@ static void walt_update_tg_pointer(struct cgroup_subsys_state *css)
 	if (!strcmp(css->cgroup->kn->name, "top-app"))
 		walt_init_topapp_tg(css_tg(css));
 	else if (!strcmp(css->cgroup->kn->name, "foreground"))
+		walt_init_foreground_tg(css_tg(css));
+	else if (!strcmp(css->cgroup->kn->name, "foreground-boost"))
 		walt_init_foreground_tg(css_tg(css));
 	else
 		walt_init_tg(css_tg(css));
@@ -5071,6 +5075,43 @@ static void walt_init_tg_pointers(void)
 	rcu_read_unlock();
 }
 
+#if IS_ENABLED(CONFIG_RQ_STAT_SHOW)
+static int rq_stat_show(struct seq_file *m, void *data)
+{
+	int cpu;
+	char buf[64];
+	int len = 0;
+	int g_gp_sum = 0;
+	int s_sum = 0;
+
+	for_each_possible_cpu(cpu) {
+		struct rq *rq = cpu_rq(cpu);
+		//len += snprintf(buf + len, 64 - len, "%u ", rq->nr_running);
+		if (!is_min_cluster_cpu(cpu))
+			g_gp_sum += rq->nr_running;
+		else
+			s_sum += rq->nr_running;
+	}
+	len += snprintf(buf + len, 64 - len, "%u ", s_sum);
+	len += snprintf(buf + len, 64 - len, "%u ", g_gp_sum);
+	seq_printf(m, "%s\n", buf);
+
+	return 0;
+}
+
+static int rq_stat_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, rq_stat_show, NULL);
+}
+
+static const struct proc_ops proc_rq_stat_op = {
+	.proc_open = rq_stat_open,
+	.proc_read = seq_read,
+	.proc_lseek = seq_lseek,
+	.proc_release = single_release,
+};
+#endif
+
 static void walt_init(struct work_struct *work)
 {
 	struct ctl_table_header *hdr;
@@ -5131,6 +5172,10 @@ static void walt_init(struct work_struct *work)
 	walt_boost_init();
 	waltgov_register();
 
+#if IS_ENABLED(CONFIG_RQ_STAT_SHOW)
+	if (!proc_create("rq_stat", 0444, NULL, &proc_rq_stat_op))
+		pr_err("Failed to register proc interface 'rq_stat'\n");
+#endif
 	i = match_string(sched_feat_names, __SCHED_FEAT_NR, "TTWU_QUEUE");
 	if (i >= 0) {
 		static_key_disable(&sched_feat_keys[i]);
@@ -5146,6 +5191,24 @@ static void android_vh_update_topology_flags_workfn(void *unused, void *unused2)
 	schedule_work(&walt_init_work);
 }
 
+static void walt_devicetree_init(void)
+{
+	struct device_node *np;
+	int ret;
+
+	np = of_find_node_by_name(NULL, "sched_walt");
+	if (!np) {
+		pr_err("Failed to find node of sched_walt\n");
+		return;
+	}
+	
+	ret = of_property_read_u32(np, "panic_on_walt_bug", &sysctl_panic_on_walt_bug);
+	if (ret < 0) {
+		pr_err("Failed to read panic_on_walt_bug property\n");
+		return;
+	}
+}
+
 #define WALT_VENDOR_DATA_SIZE_TEST(wstruct, kstruct)		\
 	BUILD_BUG_ON(sizeof(wstruct) > (sizeof(u64) *		\
 		ARRAY_SIZE(((kstruct *)0)->android_vendor_data1)))
@@ -5156,6 +5219,8 @@ static int walt_module_init(void)
 	WALT_VENDOR_DATA_SIZE_TEST(struct walt_task_struct, struct task_struct);
 	WALT_VENDOR_DATA_SIZE_TEST(struct walt_rq, struct rq);
 	WALT_VENDOR_DATA_SIZE_TEST(struct walt_task_group, struct task_group);
+
+	walt_devicetree_init();
 
 	register_trace_android_vh_update_topology_flags_workfn(
 			android_vh_update_topology_flags_workfn, NULL);
@@ -5171,4 +5236,15 @@ MODULE_LICENSE("GPL v2");
 
 #if IS_ENABLED(CONFIG_SCHED_WALT_DEBUG)
 MODULE_SOFTDEP("pre: sched-walt-debug");
+#endif
+
+#if IS_ENABLED(CONFIG_SEC_QC_SUMMARY)
+#include <linux/samsung/debug/qcom/sec_qc_summary.h>
+
+void sec_qc_summary_set_sched_walt_info(struct sec_qc_summary_data_apss *apss)
+{
+	apss->aplpm.num_clusters = num_sched_clusters;
+	apss->aplpm.p_cluster = virt_to_phys(sched_cluster);
+}
+EXPORT_SYMBOL(sec_qc_summary_set_sched_walt_info);
 #endif
