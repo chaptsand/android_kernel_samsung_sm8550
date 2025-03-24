@@ -461,6 +461,14 @@ config QCOM_DS_SKIP_Q6_STOP
 
 	  If not sure, say N.
 
+config SEC_SENSORS_SSC
+	bool "Enable Sensors Driver Support SEC features for SSC"
+	depends on ADSP_FACTORY
+	help
+	  Say y here to enable SEC features for Snapdragon Sensor Core(SSC)
+	  support SEC features for Qualcomm Technologies, Inc SoCs. SSC is used for
+	  exercising sensor use-cases.
+	  Say N if you do not want to support it.
 endif # REMOTEPROC
 
 endmenu
