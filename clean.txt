@@ -1,27 +1,18 @@
-kernel: Import rest of misc SAMSUNG changes
-net: Import rest of the SAMSUNG changes
 tools: Import SAMSUNG changes
 sound/usb: Import SAMSUNG changes
 sound/soc: Import SAMSUNG changes
 sound/core: Import SAMSUNG changes
-security: Import SAMSUNG changes
-security/selinux: Import SAMSUNG changes
-scripts: Import SAMSUNG changes
-scripts/mod: Import SAMSUNG changes
-scripts/lego: Import SAMSUNG changes
-net/xfrm: Import SAMSUNG changes
 net/wireless: Import SAMSUNG changes
 net/qrtr: Import SAMSUNG changes
 net/netfilter: Import SAMSUNG changes
-net/mac80211: Import SAMSUNG changes
 net/ipv6: Import SAMSUNG changes
 net/ipv4: Import SAMSUNG changes
 net/core: Import SAMSUNG changes
 mm: Import SAMSUNG changes
 lib: Import SAMSUNG changes
 lib/kunit: Import SAMSUNG changes
-kernel: Import SAMSUNG changes
 kunitconfigs: Import SAMSUNG changes
+kernel: Import SAMSUNG changes
 kernel/trace: Import SAMSUNG changes
 kernel/time: Import SAMSUNG changes
 kernel/sched: Import SAMSUNG changes
@@ -30,7 +21,6 @@ kernel/printk: Import SAMSUNG changes
 kernel/power: Import SAMSUNG changes
 kernel/locking: Import SAMSUNG changes
 kernel/dma: Import SAMSUNG changes
-kernel/bpf: Import SAMSUNG changes
 init: Import SAMSUNG changes
 include/uapi/linux: Import SAMSUNG changes
 include/uapi/asm-generic: Import SAMSUNG changes
@@ -43,9 +33,7 @@ include/linux: Import SAMSUNG changes
 include/kunit: Import SAMSUNG changes
 include/dt-bindings: Import SAMSUNG changes
 include/asm-generic: Import SAMSUNG changes
-fs: Import SAMSUNG changes
 fs/proc: Import SAMSUNG changes
-fs/overlayfs: Import SAMSUNG changes
 fs/f2fs: Import SAMSUNG changes
 fs/erofs: Import SAMSUNG changes
 firmware: Import SAMSUNG changes
@@ -55,7 +43,6 @@ drivers/virt/gunyah: Import SAMSUNG changes
 drivers/vibrator: Import SAMSUNG changes
 drivers/uwb: Import SAMSUNG changes
 drivers/usb: Import SAMSUNG changes
-drivers/uh: Import SAMSUNG changes
 drivers/tty: Import SAMSUNG changes
 drivers/thermal: Import SAMSUNG changes
 drivers/switch: Import SAMSUNG changes
@@ -81,7 +68,6 @@ drivers/pci: Import SAMSUNG changes
 drivers/optics: Import SAMSUNG changes
 drivers/of: Import SAMSUNG changes
 drivers/nfc: Import SAMSUNG changes
-drivers/net/ethernet/broadcom: Import SAMSUNG changes
 drivers/net/dropdump: Import SAMSUNG changes
 drivers/muic: Import SAMSUNG changes
 drivers/mmc: Import SAMSUNG changes
@@ -119,9 +105,5 @@ drivers/adsp_factory: Import SAMSUNG changes
 block: Import SAMSUNG changes
 arch: Import SAMSUNG changes
 arch/um: Import SAMSUNG changes
-arch/arm64/net: Import SAMSUNG changes
-arch/arm64/mm: Import SAMSUNG changes
 arch/arm64/kernel: Import SAMSUNG changes
 arch/arm64/include: Import SAMSUNG changes
-arch/arm64/configs: Import SAMSUNG changes
-arch/arm64/boot: Import SAMSUNG changes
